@@ -1,25 +1,22 @@
 from django.db.models import Sum
 from django.http import HttpResponse
+from recipes.models import (Favorite, Ingredient, Recipe, RecipeIngredient,
+                            ShoppingCart, Tag)
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from users.models import Subscription, User
 
-from recipes.models import (
-    Tag, Ingredient, Recipe, Favorite, ShoppingCart, RecipeIngredient
-)
-from users.models import User, Subscription
 from .filters import RecipeFilter
 from .pagination import CustomPagination
 from .permissions import IsAuthorOrReadOnly
-from .serializers import (
-    TagSerializer, IngredientSerializer,
-    UserSerializer, UserCreateSerializer, SetPasswordSerializer,
-    SetAvatarSerializer, SetAvatarResponseSerializer,
-    RecipeReadSerializer, RecipeUpdateSerializer, RecipeMinifiedSerializer,
-    UserWithRecipesSerializer, RecipeCreateSerializer,
-)
-
+from .serializers import (IngredientSerializer, RecipeCreateSerializer,
+                          RecipeMinifiedSerializer, RecipeReadSerializer,
+                          RecipeUpdateSerializer, SetAvatarResponseSerializer,
+                          SetAvatarSerializer, SetPasswordSerializer,
+                          TagSerializer, UserCreateSerializer, UserSerializer,
+                          UserWithRecipesSerializer)
 
 
 class TagViewSet(viewsets.ReadOnlyModelViewSet):

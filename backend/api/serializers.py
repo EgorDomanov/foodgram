@@ -1,13 +1,12 @@
 from django.contrib.auth import password_validation
-from djoser.serializers import UserCreateSerializer as DjoserUserCreateSerializer
+from djoser.serializers import \
+    UserCreateSerializer as DjoserUserCreateSerializer
+from recipes.models import (Favorite, Ingredient, Recipe, RecipeIngredient,
+                            ShoppingCart, Tag)
 from rest_framework import serializers
+from users.models import Subscription, User
 
-from recipes.models import (
-    Tag, Ingredient, Recipe, RecipeIngredient, Favorite, ShoppingCart
-)
-from users.models import User, Subscription
 from .fields import Base64ImageField
-
 
 
 class TagSerializer(serializers.ModelSerializer):
