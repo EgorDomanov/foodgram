@@ -1,0 +1,40 @@
+volumes:
+  pg_data:
+  backend_static:
+  backend_media:
+  frontend_build:
+
+services:
+  db:
+    image: postgres:15-alpine
+    env_file: .env
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+
+  backend:
+    image: egor323011/foodgram_backend:latest
+    env_file: .env
+    depends_on:
+      - db
+    volumes:
+      - backend_static:/app/collected_static
+      - backend_media:/app/media
+    command: gunicorn --bind 0.0.0.0:8000 foodgram_backend.wsgi:application
+
+  frontend:
+    image: egor323011/foodgram_frontend:latest
+    command: cp -r /app/build/. /frontend_build/
+    volumes:
+      - frontend_build:/frontend_build
+
+  gateway:
+    image: egor323011/foodgram_gateway:latest
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+      - frontend
+    volumes:
+      - frontend_build:/usr/share/nginx/html/frontend:ro
+      - backend_static:/var/html/static:ro
+      - backend_media:/var/html/media:ro
