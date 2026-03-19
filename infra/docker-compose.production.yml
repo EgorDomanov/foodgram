@@ -7,13 +7,13 @@ volumes:
 services:
   db:
     image: postgres:15-alpine
-    env_file: .env
+    env_file: ../.env
     volumes:
       - pg_data:/var/lib/postgresql/data
 
   backend:
     image: egor323011/foodgram_backend:latest
-    env_file: .env
+    env_file: ../.env
     depends_on:
       - db
     volumes:
@@ -30,7 +30,7 @@ services:
   gateway:
     image: egor323011/foodgram_gateway:latest
     ports:
-      - "80:80"
+      - "8080:80"
     depends_on:
       - backend
       - frontend
