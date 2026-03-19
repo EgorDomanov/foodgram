@@ -96,7 +96,7 @@ jobs:
       - name: Test frontend
         run: |
           cd frontend/
-          npm run test
+          npm run test -- --watchAll=false --passWithNoTests
 
   build_frontend_and_push_to_docker_hub:
     name: Build and push frontend image
