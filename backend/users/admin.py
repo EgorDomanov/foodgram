@@ -13,23 +13,36 @@ class UserAdmin(BaseUserAdmin):
         'first_name',
         'last_name',
         'is_staff',
+        'is_active',
     )
     search_fields = ('email', 'username')
-    list_filter = ('is_staff', 'is_superuser', 'is_active')
     ordering = ('id',)
-
     fieldsets = BaseUserAdmin.fieldsets + (
-        ('Дополнительно', {'fields': ('avatar',)}),
+        (
+            'Дополнительно',
+            {'fields': ('avatar',)},
+        ),
+    )
+    add_fieldsets = BaseUserAdmin.add_fieldsets + (
+        (
+            'Дополнительно',
+            {'fields': ('email', 'avatar')},
+        ),
     )
 
 
 @admin.register(Subscription)
 class SubscriptionAdmin(admin.ModelAdmin):
-    list_display = ('id', 'user', 'author', 'created_at')
+    list_display = (
+        'id',
+        'user',
+        'author',
+        'created_at',
+    )
     search_fields = (
         'user__email',
         'user__username',
         'author__email',
         'author__username',
     )
-    list_filter = ('created_at',)
+    autocomplete_fields = ('user', 'author')
