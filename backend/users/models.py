@@ -17,12 +17,15 @@ class User(AbstractUser):
     )
 
     USERNAME_FIELD = 'email'
-    REQUIRED_FIELDS = ['username', 'first_name', 'last_name']
+    REQUIRED_FIELDS = (
+        'username',
+        'first_name',
+        'last_name',
+    )
 
     class Meta:
         verbose_name = 'Пользователь'
         verbose_name_plural = 'Пользователи'
-        ordering = ('id',)
 
     def __str__(self):
         return self.email
@@ -52,14 +55,16 @@ class Subscription(models.Model):
         constraints = [
             models.UniqueConstraint(
                 fields=('user', 'author'),
-                name='unique_subscription'
-            )
+                name='unique_subscription',
+            ),
         ]
         ordering = ('-created_at',)
 
     def clean(self):
         if self.user == self.author:
-            raise ValidationError('Нельзя подписаться на самого себя.')
+            raise ValidationError(
+                'Нельзя подписаться на самого себя.'
+            )
 
     def save(self, *args, **kwargs):
         self.clean()

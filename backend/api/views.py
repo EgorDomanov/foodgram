@@ -1,3 +1,5 @@
+import io
+
 from django.contrib.auth import get_user_model
 from django.db.models import (
     Case,
@@ -9,14 +11,14 @@ from django.db.models import (
     Value,
     When,
 )
-from django.http import HttpResponse
+from django.http import FileResponse
 from django.urls import reverse
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
+from recipes.base36 import encode_base36
 from recipes.models import (
     Favorite,
     Ingredient,
@@ -35,11 +37,13 @@ from .serializers import (
     RecipeMinifiedSerializer,
     RecipeReadSerializer,
     RecipeRelationCreateSerializer,
+    RecipeRelationDeleteSerializer,
     RecipeUpdateSerializer,
     SetAvatarResponseSerializer,
     SetAvatarSerializer,
     SetPasswordSerializer,
     SubscriptionCreateSerializer,
+    SubscriptionDeleteSerializer,
     TagSerializer,
     UserCreateSerializer,
     UserSerializer,
@@ -49,15 +53,74 @@ from .serializers import (
 User = get_user_model()
 
 
-class TagViewSet(viewsets.ReadOnlyModelViewSet):
+class RelationActionMixin:
+    def _get_validation_serializer(
+        self,
+        serializer_class,
+        serializer_data,
+        **extra_context,
+    ):
+        serializer_context = self.get_serializer_context()
+        serializer_context.update(extra_context)
+
+        serializer = serializer_class(
+            data=serializer_data,
+            context=serializer_context,
+        )
+        serializer.is_valid(raise_exception=True)
+        return serializer
+
+    def _create_relation(
+        self,
+        serializer_class,
+        serializer_data,
+        response_serializer_class,
+        response_instance,
+        **extra_context,
+    ):
+        serializer = self._get_validation_serializer(
+            serializer_class=serializer_class,
+            serializer_data=serializer_data,
+            **extra_context,
+        )
+        serializer.save()
+
+        response_serializer = response_serializer_class(
+            response_instance,
+            context=self.get_serializer_context(),
+        )
+        return Response(
+            response_serializer.data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    def _delete_relation(
+        self,
+        serializer_class,
+        serializer_data,
+        queryset_getter,
+        **extra_context,
+    ):
+        serializer = self._get_validation_serializer(
+            serializer_class=serializer_class,
+            serializer_data=serializer_data,
+            **extra_context,
+        )
+        queryset_getter(serializer.validated_data).delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class BaseReadOnlyViewSet(viewsets.ReadOnlyModelViewSet):
+    pagination_class = None
+
+
+class TagViewSet(BaseReadOnlyViewSet):
     queryset = Tag.objects.all()
     serializer_class = TagSerializer
-    pagination_class = None
 
 
-class IngredientViewSet(viewsets.ReadOnlyModelViewSet):
+class IngredientViewSet(BaseReadOnlyViewSet):
     serializer_class = IngredientSerializer
-    pagination_class = None
 
     def get_queryset(self):
         queryset = Ingredient.objects.all()
@@ -68,6 +131,7 @@ class IngredientViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 class UserViewSet(
+    RelationActionMixin,
     mixins.CreateModelMixin,
     mixins.RetrieveModelMixin,
     mixins.ListModelMixin,
@@ -88,13 +152,13 @@ class UserViewSet(
         return UserSerializer
 
     def get_permissions(self):
-        if self.action in (
+        if self.action in {
             'me',
             'set_password',
             'subscriptions',
             'subscribe',
             'avatar',
-        ):
+        }:
             return (IsAuthenticated(),)
         return (AllowAny(),)
 
@@ -137,33 +201,26 @@ class UserViewSet(
     @action(methods=('post', 'delete'), detail=True, url_path='subscribe')
     def subscribe(self, request, pk=None):
         author = self.get_object()
+        serializer_data = {
+            'user': request.user.pk,
+            'author': author.pk,
+        }
 
         if request.method == 'POST':
-            serializer = SubscriptionCreateSerializer(
-                data={
-                    'user': request.user.pk,
-                    'author': author.pk,
-                }
-            )
-            serializer.is_valid(raise_exception=True)
-            serializer.save()
-
-            output_serializer = UserWithRecipesSerializer(
-                author,
-                context=self.get_serializer_context(),
-            )
-            return Response(
-                output_serializer.data,
-                status=status.HTTP_201_CREATED,
+            return self._create_relation(
+                serializer_class=SubscriptionCreateSerializer,
+                serializer_data=serializer_data,
+                response_serializer_class=UserWithRecipesSerializer,
+                response_instance=author,
             )
 
-        deleted_count, _ = request.user.subscriptions.filter(
-            author_id=author.pk,
-        ).delete()
-        if not deleted_count:
-            raise ValidationError('Вы не подписаны на этого пользователя.')
-
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        return self._delete_relation(
+            serializer_class=SubscriptionDeleteSerializer,
+            serializer_data=serializer_data,
+            queryset_getter=lambda data: data['user'].subscriptions.filter(
+                author_id=data['author'].pk,
+            ),
+        )
 
     @action(methods=('put', 'delete'), detail=False, url_path='me/avatar')
     def avatar(self, request):
@@ -187,19 +244,7 @@ class UserViewSet(
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-def _base36(number: int) -> str:
-    alphabet = '0123456789abcdefghijklmnopqrstuvwxyz'
-    if number == 0:
-        return '0'
-
-    result = ''
-    while number > 0:
-        number, remainder = divmod(number, 36)
-        result = alphabet[remainder] + result
-    return result
-
-
-class RecipeViewSet(viewsets.ModelViewSet):
+class RecipeViewSet(RelationActionMixin, viewsets.ModelViewSet):
     filterset_class = RecipeFilter
     permission_classes = (IsAuthenticatedAuthorOrReadOnly,)
     pagination_class = LimitPagination
@@ -257,14 +302,14 @@ class RecipeViewSet(viewsets.ModelViewSet):
         return RecipeUpdateSerializer
 
     def get_permissions(self):
-        if self.action in (
+        if self.action in {
             'create',
             'favorite',
             'shopping_cart',
             'download_shopping_cart',
-        ):
+        }:
             return (IsAuthenticated(),)
-        if self.action in ('update', 'partial_update', 'destroy'):
+        if self.action in {'update', 'partial_update', 'destroy'}:
             return (IsAuthenticatedAuthorOrReadOnly(),)
         return (AllowAny(),)
 
@@ -285,12 +330,18 @@ class RecipeViewSet(viewsets.ModelViewSet):
             status=status.HTTP_201_CREATED,
         )
 
+    def update(self, request, *args, **kwargs):
+        return self._save_recipe(request, partial=False)
+
     def partial_update(self, request, *args, **kwargs):
+        return self._save_recipe(request, partial=True)
+
+    def _save_recipe(self, request, partial):
         recipe = self.get_object()
         serializer = RecipeUpdateSerializer(
             recipe,
             data=request.data,
-            partial=False,
+            partial=partial,
             context=self.get_serializer_context(),
         )
         serializer.is_valid(raise_exception=True)
@@ -321,22 +372,21 @@ class RecipeViewSet(viewsets.ModelViewSet):
         )
 
         content = '\n'.join(
-            f"{ingredient_data['name']} "
-            f"({ingredient_data['unit']}) — "
-            f"{ingredient_data['total']}"
+            f'{ingredient_data["name"]} '
+            f'({ingredient_data["unit"]}) — '
+            f'{ingredient_data["total"]}'
             for ingredient_data in ingredients
         )
         if not content:
             content = 'Список покупок пуст.'
 
-        response = HttpResponse(
-            content,
+        shopping_list = io.BytesIO(content.encode('utf-8'))
+        return FileResponse(
+            shopping_list,
+            as_attachment=True,
+            filename='shopping_list.txt',
             content_type='text/plain; charset=utf-8',
         )
-        response['Content-Disposition'] = (
-            'attachment; filename="shopping_list.txt"'
-        )
-        return response
 
     @action(
         detail=True,
@@ -345,42 +395,40 @@ class RecipeViewSet(viewsets.ModelViewSet):
     )
     def get_link(self, request, pk=None):
         recipe = self.get_object()
-        code = _base36(recipe.pk)
+        code = encode_base36(recipe.pk)
         short_path = reverse('short-link', args=(code,))
         short_link = request.build_absolute_uri(short_path)
         return Response({'short-link': short_link})
 
+    def _recipe_relation_data(self, request, recipe):
+        return {
+            'user': request.user.pk,
+            'recipe': recipe.pk,
+        }
+
     def _create_recipe_relation(self, request, relation_model):
         recipe = self.get_object()
-        serializer = RecipeRelationCreateSerializer(
-            data={
-                'user': request.user.pk,
-                'recipe': recipe.pk,
-            },
-            context={'model_class': relation_model},
-        )
-        serializer.is_valid(raise_exception=True)
-        serializer.save()
-
-        response_serializer = RecipeMinifiedSerializer(
-            recipe,
-            context=self.get_serializer_context(),
-        )
-        return Response(
-            response_serializer.data,
-            status=status.HTTP_201_CREATED,
+        serializer_data = self._recipe_relation_data(request, recipe)
+        return self._create_relation(
+            serializer_class=RecipeRelationCreateSerializer,
+            serializer_data=serializer_data,
+            response_serializer_class=RecipeMinifiedSerializer,
+            response_instance=recipe,
+            model_class=relation_model,
         )
 
     def _delete_recipe_relation(self, request, relation_model):
         recipe = self.get_object()
-        deleted_count, _ = relation_model.objects.filter(
-            user_id=request.user.pk,
-            recipe_id=recipe.pk,
-        ).delete()
-        if not deleted_count:
-            raise ValidationError('Связь для удаления не найдена.')
-
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        serializer_data = self._recipe_relation_data(request, recipe)
+        return self._delete_relation(
+            serializer_class=RecipeRelationDeleteSerializer,
+            serializer_data=serializer_data,
+            queryset_getter=lambda data: relation_model.objects.filter(
+                user_id=data['user'].pk,
+                recipe_id=data['recipe'].pk,
+            ),
+            model_class=relation_model,
+        )
 
     @action(
         methods=('post', 'delete'),

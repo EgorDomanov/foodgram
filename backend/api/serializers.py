@@ -1,22 +1,18 @@
+from string import digits
+
 from django.contrib.auth import get_user_model, password_validation
 from djoser.serializers import (
     UserCreateSerializer as DjoserUserCreateSerializer,
 )
 from rest_framework import serializers
 
-from recipes.models import (
-    Favorite,
-    Ingredient,
-    Recipe,
-    RecipeIngredient,
-    ShoppingCart,
-    Tag,
-)
+from recipes.models import Ingredient, Recipe, RecipeIngredient, Tag
 from users.models import Subscription
 
 from .fields import Base64ImageField
 
 User = get_user_model()
+DIGIT_SET = set(digits)
 
 
 class TagSerializer(serializers.ModelSerializer):
@@ -28,7 +24,7 @@ class TagSerializer(serializers.ModelSerializer):
 class IngredientSerializer(serializers.ModelSerializer):
     class Meta:
         model = Ingredient
-        fields = ('id', 'name', 'measurement_unit')
+        fields = '__all__'
 
 
 class UserCreateSerializer(DjoserUserCreateSerializer):
@@ -80,7 +76,7 @@ class SetPasswordSerializer(serializers.Serializer):
         user = request.user
         if not user.check_password(attrs['current_password']):
             raise serializers.ValidationError(
-                {'current_password': ['Неверный пароль.']}
+                {'current_password': ('Неверный пароль.',)}
             )
 
         password_validation.validate_password(
@@ -127,8 +123,8 @@ class RecipeReadSerializer(serializers.ModelSerializer):
         many=True,
         read_only=True,
     )
-    is_favorited = serializers.SerializerMethodField()
-    is_in_shopping_cart = serializers.SerializerMethodField()
+    is_favorited = serializers.BooleanField(read_only=True)
+    is_in_shopping_cart = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = Recipe
@@ -145,34 +141,16 @@ class RecipeReadSerializer(serializers.ModelSerializer):
             'cooking_time',
         )
 
-    def _bool_for_user(self, relation_model, recipe):
-        request = self.context.get('request')
-        if request is None or not request.user.is_authenticated:
-            return False
-        return relation_model.objects.filter(
-            user_id=request.user.pk,
-            recipe_id=recipe.pk,
-        ).exists()
-
-    def get_is_favorited(self, recipe):
-        return self._bool_for_user(Favorite, recipe)
-
-    def get_is_in_shopping_cart(self, recipe):
-        return self._bool_for_user(ShoppingCart, recipe)
-
 
 class IngredientAmountWriteSerializer(serializers.Serializer):
     id = serializers.IntegerField()
     amount = serializers.IntegerField(min_value=1)
 
 
-class SubscriptionCreateSerializer(serializers.Serializer):
-    user = serializers.PrimaryKeyRelatedField(
-        queryset=User.objects.all(),
-    )
-    author = serializers.PrimaryKeyRelatedField(
-        queryset=User.objects.all(),
-    )
+class SubscriptionCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Subscription
+        fields = ('user', 'author')
 
     def validate(self, attrs):
         user = attrs['user']
@@ -190,11 +168,28 @@ class SubscriptionCreateSerializer(serializers.Serializer):
 
         return attrs
 
-    def create(self, validated_data):
-        return Subscription.objects.create(**validated_data)
+
+class SubscriptionDeleteSerializer(serializers.Serializer):
+    user = serializers.PrimaryKeyRelatedField(
+        queryset=User.objects.all(),
+    )
+    author = serializers.PrimaryKeyRelatedField(
+        queryset=User.objects.all(),
+    )
+
+    def validate(self, attrs):
+        user = attrs['user']
+        author = attrs['author']
+
+        if not user.subscriptions.filter(author_id=author.pk).exists():
+            raise serializers.ValidationError(
+                'Вы не подписаны на этого пользователя.'
+            )
+
+        return attrs
 
 
-class RecipeRelationCreateSerializer(serializers.Serializer):
+class BaseRecipeRelationSerializer(serializers.Serializer):
     user = serializers.PrimaryKeyRelatedField(
         queryset=User.objects.all(),
     )
@@ -202,6 +197,8 @@ class RecipeRelationCreateSerializer(serializers.Serializer):
         queryset=Recipe.objects.all(),
     )
 
+
+class RecipeRelationCreateSerializer(BaseRecipeRelationSerializer):
     def validate(self, attrs):
         relation_model = self.context.get('model_class')
         if relation_model is None:
@@ -227,6 +224,28 @@ class RecipeRelationCreateSerializer(serializers.Serializer):
         return relation_model.objects.create(**validated_data)
 
 
+class RecipeRelationDeleteSerializer(BaseRecipeRelationSerializer):
+    def validate(self, attrs):
+        relation_model = self.context.get('model_class')
+        if relation_model is None:
+            raise serializers.ValidationError(
+                'Некорректный тип связи.'
+            )
+
+        user = attrs['user']
+        recipe = attrs['recipe']
+
+        if not relation_model.objects.filter(
+            user_id=user.pk,
+            recipe_id=recipe.pk,
+        ).exists():
+            raise serializers.ValidationError(
+                'Связь для удаления не найдена.'
+            )
+
+        return attrs
+
+
 class RecipeCreateSerializer(serializers.ModelSerializer):
     ingredients = IngredientAmountWriteSerializer(many=True)
     tags = serializers.ListField(
@@ -247,7 +266,7 @@ class RecipeCreateSerializer(serializers.ModelSerializer):
         )
 
     def validate(self, attrs):
-        ingredients = attrs.get('ingredients', [])
+        ingredients = attrs.get('ingredients', ())
         if not ingredients:
             raise serializers.ValidationError(
                 {'ingredients': ['Это поле обязательно.']}
@@ -312,14 +331,42 @@ class RecipeCreateSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         ingredients = validated_data.pop('ingredients')
         tags_ids = validated_data.pop('tags')
-        request = self.context['request']
+        validated_data['author'] = self.context['request'].user
 
-        recipe = Recipe.objects.create(
-            author=request.user,
-            **validated_data,
-        )
+        recipe = super().create(validated_data)
         self._set_tags_and_ingredients(recipe, tags_ids, ingredients)
         return recipe
+
+    def update(self, instance, validated_data):
+        ingredients = validated_data.pop('ingredients', None)
+        tags_ids = validated_data.pop('tags', None)
+
+        for attribute, value in validated_data.items():
+            setattr(instance, attribute, value)
+        instance.save()
+
+        if tags_ids is not None and ingredients is not None:
+            self._set_tags_and_ingredients(
+                instance,
+                tags_ids,
+                ingredients,
+            )
+            return instance
+
+        if tags_ids is not None:
+            instance.tags.set(Tag.objects.filter(id__in=tags_ids))
+
+        if ingredients is not None:
+            current_tag_ids = tuple(
+                instance.tags.values_list('id', flat=True)
+            )
+            self._set_tags_and_ingredients(
+                instance,
+                current_tag_ids,
+                ingredients,
+            )
+
+        return instance
 
 
 class RecipeUpdateSerializer(RecipeCreateSerializer):
@@ -343,8 +390,10 @@ class UserWithRecipesSerializer(UserSerializer):
         request = self.context.get('request')
         limit = request.query_params.get('recipes_limit') if request else None
         recipes = author.recipes.order_by('-created_at')
-        if limit is not None and str(limit).isdigit():
+
+        if limit and set(limit) <= DIGIT_SET:
             recipes = recipes[:int(limit)]
+
         return RecipeMinifiedSerializer(
             recipes,
             many=True,
