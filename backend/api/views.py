@@ -390,6 +390,7 @@ class RecipeViewSet(RelationActionMixin, viewsets.ModelViewSet):
         )
 
     @action(
+        methods=('get',),
         detail=True,
         url_path='get-link',
         permission_classes=(AllowAny,),
@@ -397,7 +398,10 @@ class RecipeViewSet(RelationActionMixin, viewsets.ModelViewSet):
     def get_link(self, request, pk=None):
         recipe = self.get_object()
         code = encode_base36(recipe.pk)
-        short_path = reverse('short-link', args=(code,))
+        short_path = reverse(
+            'short-link',
+            kwargs={'code': code},
+        )
         short_link = request.build_absolute_uri(short_path)
         return Response({'short-link': short_link})
 
