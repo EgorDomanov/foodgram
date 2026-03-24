@@ -1,74 +1,113 @@
-from django.contrib.auth.models import AbstractUser
-from django.core.exceptions import ValidationError
-from django.db import models
+import csv
+import json
+from pathlib import Path
+
+from django.conf import settings
+from django.core.management.base import BaseCommand, CommandError
+
+from recipes.models import Ingredient
 
 
-class User(AbstractUser):
-    email = models.EmailField(
-        'Электронная почта',
-        unique=True,
-        max_length=254,
-    )
-    avatar = models.ImageField(
-        'Аватар',
-        upload_to='users/avatars/',
-        blank=True,
-        null=True,
-    )
+class Command(BaseCommand):
+    help = 'Load ingredients from CSV or JSON file from /data'
 
-    USERNAME_FIELD = 'email'
-    REQUIRED_FIELDS = (
-        'username',
-        'first_name',
-        'last_name',
-    )
-
-    class Meta:
-        verbose_name = 'Пользователь'
-        verbose_name_plural = 'Пользователи'
-
-    def __str__(self):
-        return self.email
-
-
-class Subscription(models.Model):
-    user = models.ForeignKey(
-        User,
-        on_delete=models.CASCADE,
-        related_name='subscriptions',
-        verbose_name='Подписчик',
-    )
-    author = models.ForeignKey(
-        User,
-        on_delete=models.CASCADE,
-        related_name='subscribers',
-        verbose_name='Автор',
-    )
-    created_at = models.DateTimeField(
-        auto_now_add=True,
-        verbose_name='Дата подписки',
-    )
-
-    class Meta:
-        verbose_name = 'Подписка'
-        verbose_name_plural = 'Подписки'
-        constraints = [
-            models.UniqueConstraint(
-                fields=('user', 'author'),
-                name='unique_subscription',
+    def add_arguments(self, parser):
+        parser.add_argument(
+            '--path',
+            type=str,
+            default='',
+            help=(
+                'Path to ingredients.csv or ingredients.json '
+                '(optional)'
             ),
-        ]
-        ordering = ('-created_at',)
+        )
 
-    def clean(self):
-        if self.user == self.author:
-            raise ValidationError(
-                'Нельзя подписаться на самого себя.'
+    def handle(self, *args, **options):
+        path_opt = options['path'].strip()
+
+        if path_opt:
+            file_path = Path(path_opt)
+        else:
+            candidates = (
+                settings.BASE_DIR / 'data' / 'ingredients.csv',
+                settings.BASE_DIR.parent / 'data' / 'ingredients.csv',
+                settings.BASE_DIR / 'data' / 'ingredients.json',
+                settings.BASE_DIR.parent / 'data' / 'ingredients.json',
+            )
+            file_path = next(
+                (
+                    candidate
+                    for candidate in candidates
+                    if candidate.exists()
+                ),
+                None,
             )
 
-    def save(self, *args, **kwargs):
-        self.clean()
-        super().save(*args, **kwargs)
+        if not file_path or not file_path.exists():
+            raise CommandError(
+                'Не найден файл ингредиентов. Передай --path '
+                'или проверь папку data/.'
+            )
 
-    def __str__(self):
-        return f'{self.user} подписан на {self.author}'
+        created = self._load_file(file_path)
+        self.stdout.write(
+            self.style.SUCCESS(
+                'Готово. Загружено (создано/пропущено дублей): '
+                f'{created} записей.'
+            )
+        )
+
+    def _load_file(self, file_path: Path) -> int:
+        suffix = file_path.suffix.lower()
+        items = []
+
+        if suffix == '.csv':
+            with file_path.open(
+                'r',
+                encoding='utf-8',
+            ) as source_file:
+                reader = csv.reader(source_file)
+                for row in reader:
+                    if not row:
+                        continue
+                    name = row[0].strip()
+                    unit = row[1].strip() if len(row) > 1 else ''
+                    if name and unit:
+                        items.append(
+                            Ingredient(
+                                name=name,
+                                measurement_unit=unit,
+                            )
+                        )
+
+        elif suffix == '.json':
+            with file_path.open(
+                'r',
+                encoding='utf-8',
+            ) as source_file:
+                ingredients_data = json.load(source_file)
+
+            for ingredient_data in ingredients_data:
+                name = str(
+                    ingredient_data.get('name', '')
+                ).strip()
+                unit = str(
+                    ingredient_data.get('measurement_unit', '')
+                ).strip()
+                if name and unit:
+                    items.append(
+                        Ingredient(
+                            name=name,
+                            measurement_unit=unit,
+                        )
+                    )
+        else:
+            raise CommandError(
+                'Поддерживаются только .csv и .json'
+            )
+
+        Ingredient.objects.bulk_create(
+            items,
+            ignore_conflicts=True,
+        )
+        return len(items)

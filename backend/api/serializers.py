@@ -199,6 +199,7 @@ class BaseRecipeRelationSerializer(serializers.Serializer):
 
 
 class RecipeRelationCreateSerializer(BaseRecipeRelationSerializer):
+
     def validate(self, attrs):
         relation_model = self.context.get('model_class')
         if relation_model is None:
@@ -269,7 +270,7 @@ class RecipeCreateSerializer(serializers.ModelSerializer):
         ingredients = attrs.get('ingredients', ())
         if not ingredients:
             raise serializers.ValidationError(
-                {'ingredients': ['Это поле обязательно.']}
+                {'ingredients': ('Это поле обязательно.')}
             )
 
         ingredient_ids = tuple(
@@ -278,13 +279,13 @@ class RecipeCreateSerializer(serializers.ModelSerializer):
         )
         if len(ingredient_ids) != len(set(ingredient_ids)):
             raise serializers.ValidationError(
-                {'ingredients': ['Ингредиенты не должны повторяться.']}
+                {'ingredients': ('Ингредиенты не должны повторяться.')}
             )
 
         tag_ids = tuple(attrs.get('tags', ()))
         if len(tag_ids) != len(set(tag_ids)):
             raise serializers.ValidationError(
-                {'tags': ['Теги не должны повторяться.']}
+                {'tags': ('Теги не должны повторяться.')}
             )
 
         return attrs
@@ -329,11 +330,12 @@ class RecipeCreateSerializer(serializers.ModelSerializer):
         RecipeIngredient.objects.bulk_create(recipe_ingredients)
 
     def create(self, validated_data):
-        ingredients = validated_data.pop('ingredients')
-        tags_ids = validated_data.pop('tags')
-        validated_data['author'] = self.context['request'].user
+        recipe_data = validated_data.copy()
+        ingredients = recipe_data.pop('ingredients')
+        tags_ids = recipe_data.pop('tags')
+        recipe_data['author'] = self.context['request'].user
 
-        recipe = super().create(validated_data)
+        recipe = super().create(recipe_data)
         self._set_tags_and_ingredients(recipe, tags_ids, ingredients)
         return recipe
 

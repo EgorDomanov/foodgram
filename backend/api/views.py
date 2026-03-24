@@ -54,6 +54,7 @@ User = get_user_model()
 
 
 class RelationActionMixin:
+
     def _get_validation_serializer(
         self,
         serializer_class,
